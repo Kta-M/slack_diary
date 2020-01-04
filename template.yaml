@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Diary App for Slack
+
+Parameters:
+  WriteCommandToken:
+    Description: Write Slash Command Token
+    Type: String
+
+  ReadCommandToken:
+    Description: Read Slash Command Token
+    Type: String
+
+  IncomingWebhookUrl:
+    Description: Incoming Webhook URL
+    Type: String
+
+  ValidChannelId:
+    Description: Valid Channel ID
+    Type: String
+
+  ValidUserId:
+    Description: Valid User ID
+    Type: String
+
+  BucketName:
+    Description: Diary Bucket Name
+    Type: String
+
+Globals:
+  Function:
+    Timeout: 3
+    Runtime: ruby2.5
+
+Resources:
+  WriteDiaryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.write
+      Role: !GetAtt LambdaRole.Arn
+      FunctionName: SlackDiaryWriter
+      Events:
+        WriteDiary:
+          Type: Api
+          Properties:
+            Path: /write
+            Method: post
+      Environment:
+        Variables:
+          SLASH_COMMAND_TOKEN: !Ref WriteCommandToken
+          VALID_CHANNEL_ID: !Ref ValidChannelId
+          VALID_USER_ID: !Ref ValidUserId
+          BUCKET_NAME: !Ref BucketName
+
+  ReadDiaryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.read
+      Role: !GetAtt LambdaRole.Arn
+      FunctionName: SlackDiaryReader
+      Events:
+        WriteDiary:
+          Type: Api
+          Properties:
+            Path: /read
+            Method: get
+      Environment:
+        Variables:
+          SLASH_COMMAND_TOKEN: !Ref ReadCommandToken
+          VALID_CHANNEL_ID: !Ref ValidChannelId
+          VALID_USER_ID: !Ref ValidUserId
+          BUCKET_NAME: !Ref BucketName
+
+  RemindDiaryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.remind
+      Role: !GetAtt LambdaRole.Arn
+      FunctionName: SlackDiaryReminder
+      Environment:
+        Variables:
+          INCOMING_WEBHOOK_URL: !Ref IncomingWebhookUrl
+          TARGET_CHANNEL_ID: !Ref ValidChannelId
+          BUCKET_NAME: !Ref BucketName
+          TZ: Asia/Tokyo
+
+  DiaryReminderEvent:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: diary_reminder
+      ScheduleExpression: 'cron(0 12 * * ? *)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt RemindDiaryFunction.Arn
+          Id: diary_reminder_lambda
+
+  DiaryReminderEventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt RemindDiaryFunction.Arn
+      Principal: 'events.amazonaws.com'
+      SourceArn: !GetAtt DiaryReminderEvent.Arn
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SlackDiaryRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: SlackDiaryPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:DescribeLogGroups'
+                  - 'logs:DescribeLogStreams'
+                  - 'logs:PutLogEvents'
+                  - 'logs:PutRetentionPolicy'
+                Resource: '*'
+              - Effect: 'Allow'
+                Action:
+                  - 's3:ListBucket'
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                Resource:
+                  - !Join
+                    - ''
+                    - - 'arn:aws:s3:::'
+                      - !Ref BucketName
+                  - !Join
+                    - ''
+                    - - 'arn:aws:s3:::'
+                      - !Ref BucketName
+                      - '/*'
+
+  DiaryS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      VersioningConfiguration:
+        Status: Enabled
+
